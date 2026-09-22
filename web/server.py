@@ -54,6 +54,14 @@ JSON-API:
                               (характер/тон) и style (характер ответов).
                               Ответы даёт АКТИВНАЯ персона своей моделью;
                               при отсутствии персон диалог идёт с моделями.
+    GET  /api/mcp           - состояние MCP: {enabled, model, tools, status}
+                              (настройки + последний статус сервера)
+    POST /api/mcp           - {action, …} -> настройки и статус MCP:
+                              "state"  — вернуть текущее состояние (по умолч.);
+                              "set"    — сохранить {enabled?, model?};
+                              "status" — ПРОВЕРИТЬ статус MCP-сервера
+                                         (подключиться, получить список
+                                         инструментов и вернуть результат).
     """
 import json
 import mimetypes
@@ -67,11 +75,95 @@ from rtk_app import config
 from rtk_app.agent import Agent
 from rtk_app.session_store import SessionStore
 
+try:
+    # MCP-клиент (опциональная зависимость): сервер проекта должен
+    # запускаться даже без пакета mcp — тогда статус MCP будет «недоступен».
+    from rtk_app import mcp_client
+except Exception:  # pragma: no cover — зависит от окружения
+    mcp_client = None
+
 
 class _ServerState:
     """Глобальное состояние сервера: агент (единая сущность) и сессия."""
     agent = None
     session = None
+    # Настройки MCP (включается чекбоксом в левой колонке):
+    #   enabled — использовать ли инструменты MCP;
+    #   model   — метка модели, применяемой при работе с MCP;
+    #   status  — последний результат проверки статуса MCP-сервера.
+    mcp_enabled = getattr(config, "MCP_ENABLED", False)
+    mcp_model = getattr(config, "MCP_MODEL", "")
+    mcp_status = None
+    mcp_lock = threading.Lock()
+
+
+def _mcp_settings_file():
+    """Путь к файлу настроек MCP (в папке сессии)."""
+    return getattr(config, "MCP_SETTINGS_FILE", None)
+
+
+def _load_mcp_settings():
+    """Загружает настройки MCP из файла (если есть), заполняя состояние."""
+    path = _mcp_settings_file()
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _ServerState.mcp_enabled = bool(data.get("enabled",
+                                                   _ServerState.mcp_enabled))
+            model = data.get("model")
+            if isinstance(model, str):
+                _ServerState.mcp_model = model
+    except Exception as exc:
+        print("[MCP] не удалось загрузить настройки: %s" % exc, flush=True)
+
+
+def _save_mcp_settings():
+    """Сохраняет настройки MCP на диск (в папку сессии)."""
+    path = _mcp_settings_file()
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"enabled": _ServerState.mcp_enabled,
+                       "model": _ServerState.mcp_model}, f,
+                      ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print("[MCP] не удалось сохранить настройки: %s" % exc, flush=True)
+
+
+def _mcp_state_payload(check=False):
+    """Собирает состояние MCP для ответа клиенту.
+
+    check=True — предварительно ПРОВЕРЯЕТ статус сервера (подключение +
+    список инструментов) и обновляет сохранённый статус.
+    """
+    if check:
+        _ServerState.mcp_status = _probe_mcp_status()
+    status = _ServerState.mcp_status
+    return {
+        "ok": True,
+        "enabled": bool(_ServerState.mcp_enabled),
+        "model": _ServerState.mcp_model or "",
+        "available": mcp_client is not None,
+        "status": status,
+    }
+
+
+def _probe_mcp_status():
+    """Проверяет статус MCP-сервера (через mcp_client.mcp_status)."""
+    if mcp_client is None:
+        return {"ok": False, "connected": False, "tools_count": 0,
+                "tools": [], "server": "",
+                "error": "MCP-клиент недоступен (не установлен пакет mcp)."}
+    try:
+        return mcp_client.mcp_status()
+    except Exception as exc:
+        return {"ok": False, "connected": False, "tools_count": 0,
+                "tools": [], "server": "", "error": str(exc)}
 
 
 def _set_agent(agent):
@@ -166,6 +258,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             })
         if path == "/api/invariants":
             return self._send_json(200, self.session.invariants_state())
+        if path == "/api/mcp":
+            return self._send_json(200, _mcp_state_payload(check=False))
         self._send_json(404, {"ok": False, "error": "Not Found"})
 
     def do_POST(self):
@@ -198,6 +292,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return self._handle_invariants_selftest()
         if urllib.parse.urlparse(self.path).path == "/api/profiles":
             return self._handle_profiles()
+        if urllib.parse.urlparse(self.path).path == "/api/mcp":
+            return self._handle_mcp()
         self._send_json(404, {"ok": False, "error": "Not Found"})
 
     # ---------------- Статика ----------------
@@ -285,7 +381,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             # Персон нет — режим «напрямую с моделями».
             answer_title = None
             profile = None
-            if selected is None:
+            if selected is None and not _ServerState.mcp_enabled:
                 return self._send_json(200, {
                     "ok": False,
                     "error": "Не выбрана ни одна модель. Включите модель для "
@@ -353,14 +449,32 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             print("[INVARIANT] инвариантов в запросе: %d" % len(invariants),
                   flush=True)
 
-        result = self.agent.answer(question, history, selected,
-                                   max_tokens=max_tokens,
-                                   compact=compact,
-                                   memory=memory,
-                                   profile=profile,
-                                   answer_title=answer_title,
-                                   task_state=task_state,
-                                   invariants=invariants)
+        # ВЕТКА MCP: если MCP включён в интерфейсе — запрос идёт ЧЕРЕЗ MCP
+        # (модель выбирает инструмент, инструмент вызывается на MCP-сервере,
+        # его результат возвращается как ответ). Иначе — обычный путь агента.
+        if _ServerState.mcp_enabled:
+            print("[MCP] запрос идёт через MCP (model=%r)"
+                  % (_ServerState.mcp_model or "auto"), flush=True)
+            tools = []
+            if mcp_client is not None:
+                listed = mcp_client.mcp_list_tools()
+                if listed.get("ok"):
+                    tools = listed.get("tools", [])
+                else:
+                    print("[MCP] не удалось получить список инструментов: %s"
+                          % listed.get("error"), flush=True)
+            result = self.agent.answer_via_mcp(
+                question, tools,
+                model=(_ServerState.mcp_model or None))
+        else:
+            result = self.agent.answer(question, history, selected,
+                                       max_tokens=max_tokens,
+                                       compact=compact,
+                                       memory=memory,
+                                       profile=profile,
+                                       answer_title=answer_title,
+                                       task_state=task_state,
+                                       invariants=invariants)
         if result.get("ok"):
             # По одному ходу на ответ модели с уже готовой разметкой
             self.session.append_turn(question, {
@@ -1009,6 +1123,36 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         result["invariants"] = invariants
         return self._send_json(200, result)
 
+    def _handle_mcp(self):
+        """Управление MCP: чтение/запись настроек и проверка статуса сервера.
+
+        Тело запроса (все поля необязательны, action определяет смысл):
+            action: "state"  — вернуть состояние MCP (по умолчанию);
+                    "set"    — сохранить настройки {enabled?, model?};
+                    "status" — ПРОВЕРИТЬ статус MCP-сервера: подключиться,
+                               получить список инструментов и вернуть
+                               результат (для кнопки «Проверить статус»).
+            enabled — bool: включать ли использование инструментов MCP;
+            model   — метка модели, применяемой при работе с MCP.
+        """
+        data = self._read_json_body() or {}
+        action = str(data.get("action", "state")).strip().lower()
+
+        if action == "set":
+            with _ServerState.mcp_lock:
+                if "enabled" in data:
+                    _ServerState.mcp_enabled = bool(data.get("enabled"))
+                if "model" in data:
+                    _ServerState.mcp_model = str(data.get("model") or "")
+                _save_mcp_settings()
+            return self._send_json(200, _mcp_state_payload(check=False))
+
+        if action == "status":
+            return self._send_json(200, _mcp_state_payload(check=True))
+
+        # action == "state" и всё прочее — отдаём состояние без проверки.
+        return self._send_json(200, _mcp_state_payload(check=False))
+
 
 def create_server(agent, host=None, port=None):
     """Создаёт HTTP-сервер, связанный с конкретным экземпляром агента."""
@@ -1043,6 +1187,9 @@ def serve(agent_or_key, host=None, port=None, open_page=True, agent=None):
     """
     if agent is None:
         agent = agent_or_key
+
+    # Загружаем сохранённые настройки MCP (вкл/выкл + модель).
+    _load_mcp_settings()
 
     # Агент — отдельная сущность, построенная вокруг ключа либо переданная.
     if not isinstance(agent, Agent):
