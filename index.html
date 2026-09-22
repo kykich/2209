@@ -142,6 +142,30 @@
             </div>
             <span class="side-note">правила хранятся отдельно от диалога; при конфликте ассистент отказывает и объясняет причину</span>
 
+            <!-- MCP (Model Context Protocol): возможность использовать
+                 инструменты внешнего MCP-сервера. Чекбокс включает MCP,
+                 кнопка проверяет СТАТУС сервера (подключение + список
+                 инструментов), а селект выбирает МОДЕЛЬ, применяемую при
+                 работе с MCP. -->
+            <div class="side-title side-sub">MCP</div>
+            <div class="mcp-box">
+                <label class="mcp-toggle" title="Использовать инструменты MCP-сервера">
+                    <input type="checkbox" id="mcp-enabled">
+                    <span>Использовать MCP</span>
+                </label>
+                <label class="compact-label side-label">
+                    <span>модель MCP</span>
+                    <select id="mcp-model" class="gen-input mcp-input"
+                            title="Модель, применяемая при работе с MCP"></select>
+                </label>
+                <div class="mcp-status-row">
+                    <button id="mcp-check" type="button" class="btn-side">Проверить статус</button>
+                    <span id="mcp-status" class="mcp-status"></span>
+                </div>
+                <div id="mcp-tools" class="mcp-tools" hidden></div>
+            </div>
+            <span class="side-note">инструменты MCP-сервера: подключение, список инструментов и модель ответа</span>
+
             <!-- Summary: автоматическое сжатие истории (без кнопки).
                  Summary генерируется само после накопления указанного
                  числа несжатых сообщений. -->

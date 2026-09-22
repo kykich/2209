@@ -1932,7 +1932,11 @@
         //   * есть активная персона — отвечает она СВОЕЙ моделью,
         //     выбор моделей сверху недоступен;
         //   * персон нет — диалог идёт напрямую с выбранными моделями.
-        if (!hasActiveProfile() && !hasSelectedModel()) {
+        // Включён MCP с выбранной моделью — модель сверху и
+        // персона не нужны (запрос пойдёт через MCP на сервере).
+        var mcpReady = !!(mcpState && mcpState.enabled &&
+                          (mcpState.model || mcpState.available));
+        if (!hasActiveProfile() && !hasSelectedModel() && !mcpReady) {
             setStatus("Выберите модель или создайте персону.", "error");
             return;
         }
@@ -2096,12 +2100,148 @@
                 }));
             }
             fillProfileModelSelect(availableLabels);
+            fillMcpModelSelect(availableLabels);
             renderModelStats();
         })
         .catch(function () {});
 
+
+    // ------------------------------------------------------------------
+    // MCP (Model Context Protocol)
+    // ------------------------------------------------------------------
+    // В левой колонке: чекбокс включения MCP, кнопка проверки СТАТУСА
+    // сервера и селект МОДЕЛИ, применяемой при работе с MCP.
+    // Состояние (вкл/выкл + модель) хранится на сервере (GET/POST /api/mcp).
+    var mcpEnabledEl = document.getElementById("mcp-enabled");
+    var mcpModelSel = document.getElementById("mcp-model");
+    var mcpCheckBtn = document.getElementById("mcp-check");
+    var mcpStatusEl = document.getElementById("mcp-status");
+    var mcpToolsEl = document.getElementById("mcp-tools");
+
+    // Локальный снимок настроек MCP.
+    var mcpState = { enabled: false, model: "", status: null, available: false };
+
+    // Заполняет селект моделей MCP (те же метки, что и доступные модели).
+    function fillMcpModelSelect(labels) {
+        if (!mcpModelSel) return;
+        var current = mcpState.model || (mcpModelSel.value || "");
+        mcpModelSel.innerHTML = "";
+        var none = document.createElement("option");
+        none.value = "";
+        none.textContent = "модель: первая доступная";
+        mcpModelSel.appendChild(none);
+        (labels || []).forEach(function (l) {
+            var o = document.createElement("option");
+            o.value = l;
+            o.textContent = l;
+            mcpModelSel.appendChild(o);
+        });
+        // Восстанавливаем сохранённый выбор, если он есть в списке.
+        mcpModelSel.value = (current && (labels || []).indexOf(current) >= 0)
+            ? current : "";
+        mcpState.model = mcpModelSel.value || "";
+    }
+
+    // Показывает статус MCP-сервера (текст + список инструментов).
+    function renderMcpStatus(status) {
+        mcpState.status = status || null;
+        if (mcpStatusEl) {
+            if (!status) {
+                mcpStatusEl.textContent = "";
+                mcpStatusEl.className = "mcp-status";
+            } else if (status.ok) {
+                mcpStatusEl.textContent = "подключён · инструментов: " +
+                    (status.tools_count || 0);
+                mcpStatusEl.className = "mcp-status ok";
+                mcpStatusEl.title = status.server || "";
+            } else {
+                mcpStatusEl.textContent = "недоступен";
+                mcpStatusEl.className = "mcp-status error";
+                mcpStatusEl.title = status.error || "";
+            }
+        }
+        if (mcpToolsEl) {
+            if (status && status.ok && status.tools && status.tools.length) {
+                mcpToolsEl.hidden = false;
+                mcpToolsEl.textContent = "инструменты: " + status.tools.join(", ");
+            } else {
+                mcpToolsEl.hidden = true;
+                mcpToolsEl.textContent = "";
+            }
+        }
+    }
+
+    // Применяет состояние MCP, пришедшее от сервера.
+    function applyMcpState(d) {
+        if (!d) return;
+        mcpState.enabled = !!d.enabled;
+        mcpState.available = !!d.available;
+        if (typeof d.model === "string") mcpState.model = d.model;
+        if (mcpEnabledEl) mcpEnabledEl.checked = mcpState.enabled;
+        if (mcpModelSel && mcpModelSel.options.length) {
+            mcpModelSel.value = mcpState.model || "";
+        }
+        if ("status" in d) renderMcpStatus(d.status);
+        if (d.available === false && !d.status && mcpStatusEl) {
+            mcpStatusEl.textContent = "MCP недоступен";
+            mcpStatusEl.className = "mcp-status error";
+        }
+    }
+
+    // Отправляет действие MCP на сервер.
+    function mcpAction(action, extra) {
+        var payload = { action: action };
+        if (extra) {
+            Object.keys(extra).forEach(function (k) { payload[k] = extra[k]; });
+        }
+        return fetch("/api/mcp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) applyMcpState(d); return d; })
+        .catch(function () { return null; });
+    }
+
+    // Загружает состояние MCP при старте страницы.
+    function initMcp() {
+        fetch("/api/mcp")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) { if (d) applyMcpState(d); })
+            .catch(function () {});
+    }
+
+    if (mcpEnabledEl) {
+        mcpEnabledEl.addEventListener("change", function () {
+            setStatus(mcpEnabledEl.checked ? "MCP включён." : "MCP выключен.", "ok");
+            mcpAction("set", { enabled: mcpEnabledEl.checked });
+        });
+    }
+    if (mcpModelSel) {
+        mcpModelSel.addEventListener("change", function () {
+            mcpState.model = mcpModelSel.value || "";
+            mcpAction("set", { model: mcpState.model });
+        });
+    }
+    if (mcpCheckBtn) {
+        mcpCheckBtn.addEventListener("click", function () {
+            mcpCheckBtn.disabled = true;
+            if (mcpStatusEl) {
+                mcpStatusEl.textContent = "проверяю…";
+                mcpStatusEl.className = "mcp-status";
+            }
+            mcpAction("status").finally(function () {
+                mcpCheckBtn.disabled = false;
+            });
+        });
+    }
+
+
     // Инициализация интерфейса.
     renderModelStats();
+    // Настраиваем MCP (вкл/выкл + модель) и проверяем его статус.
+    initMcp();
     renderModelsTitle();
     resetContextStats();
     // Показываем панели facts/веток согласно активной стратегии.
