@@ -415,7 +415,7 @@ class Agent:
         return "\n".join(lines)
 
     def answer_via_mcp(self, question, tools, model=None, temperature=None,
-                       max_tokens=None):
+                       max_tokens=None, server_id=None):
         """Отвечает на запрос через MCP: модель выбирает инструмент и аргументы,
         затем инструмент вызывается на MCP-сервере, а его результат возвращается
         как ответ.
@@ -494,7 +494,7 @@ class Agent:
         # 2b) Вызываем выбранный MCP-инструмент.
         trace.append({"kind": "branch", "title": "MCP -> вызов инструмента",
                       "detail": "%s(%s)" % (tool_name, json_dumps_safe(args))})
-        call = mcp_client.mcp_call_tool(tool_name, args)
+        call = mcp_client.mcp_call_tool(tool_name, args, server_id=server_id)
         if not call.get("ok"):
             err = call.get("error") or "инструмент вернул ошибку"
             trace.append({"kind": "exit", "ok": False,

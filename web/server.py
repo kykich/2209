@@ -89,10 +89,12 @@ class _ServerState:
     session = None
     # Настройки MCP (включается чекбоксом в левой колонке):
     #   enabled — использовать ли инструменты MCP;
-    #   model   — метка модели, применяемой при работе с MCP;
+        #   model   — метка модели, применяемой при работе с MCP;
     #   status  — последний результат проверки статуса MCP-сервера.
     mcp_enabled = getattr(config, "MCP_ENABLED", False)
     mcp_model = getattr(config, "MCP_MODEL", "")
+    # id выбранного MCP-сервера (см. config.MCP_SERVERS).
+    mcp_server = getattr(config, "MCP_SERVER_DEFAULT", "demo")
     mcp_status = None
     mcp_lock = threading.Lock()
 
@@ -116,6 +118,9 @@ def _load_mcp_settings():
             model = data.get("model")
             if isinstance(model, str):
                 _ServerState.mcp_model = model
+            server = data.get("server")
+            if isinstance(server, str) and server:
+                _ServerState.mcp_server = server
     except Exception as exc:
         print("[MCP] не удалось загрузить настройки: %s" % exc, flush=True)
 
@@ -129,25 +134,33 @@ def _save_mcp_settings():
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"enabled": _ServerState.mcp_enabled,
-                       "model": _ServerState.mcp_model}, f,
+                       "model": _ServerState.mcp_model,
+                       "server": _ServerState.mcp_server}, f,
                       ensure_ascii=False, indent=2)
     except Exception as exc:
         print("[MCP] не удалось сохранить настройки: %s" % exc, flush=True)
-
 
 def _mcp_state_payload(check=False):
     """Собирает состояние MCP для ответа клиенту.
 
     check=True — предварительно ПРОВЕРЯЕТ статус сервера (подключение +
     список инструментов) и обновляет сохранённый статус.
-    """
+        """
     if check:
         _ServerState.mcp_status = _probe_mcp_status()
     status = _ServerState.mcp_status
+    servers = []
+    if mcp_client is not None:
+        try:
+            servers = mcp_client.mcp_servers()
+        except Exception:
+            servers = []
     return {
         "ok": True,
         "enabled": bool(_ServerState.mcp_enabled),
         "model": _ServerState.mcp_model or "",
+        "server": _ServerState.mcp_server or "",
+        "servers": servers,
         "available": mcp_client is not None,
         "status": status,
     }
@@ -160,7 +173,7 @@ def _probe_mcp_status():
                 "tools": [], "server": "",
                 "error": "MCP-клиент недоступен (не установлен пакет mcp)."}
     try:
-        return mcp_client.mcp_status()
+        return mcp_client.mcp_status(server_id=(_ServerState.mcp_server or None))
     except Exception as exc:
         return {"ok": False, "connected": False, "tools_count": 0,
                 "tools": [], "server": "", "error": str(exc)}
@@ -453,11 +466,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         # (модель выбирает инструмент, инструмент вызывается на MCP-сервере,
         # его результат возвращается как ответ). Иначе — обычный путь агента.
         if _ServerState.mcp_enabled:
-            print("[MCP] запрос идёт через MCP (model=%r)"
-                  % (_ServerState.mcp_model or "auto"), flush=True)
+            print("[MCP] запрос идёт через MCP (server=%r, model=%r)"
+                  % (_ServerState.mcp_server or "default",
+                     _ServerState.mcp_model or "auto"), flush=True)
             tools = []
             if mcp_client is not None:
-                listed = mcp_client.mcp_list_tools()
+                listed = mcp_client.mcp_list_tools(
+                    server_id=(_ServerState.mcp_server or None))
                 if listed.get("ok"):
                     tools = listed.get("tools", [])
                 else:
@@ -465,7 +480,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                           % listed.get("error"), flush=True)
             result = self.agent.answer_via_mcp(
                 question, tools,
-                model=(_ServerState.mcp_model or None))
+                model=(_ServerState.mcp_model or None),
+                server_id=(_ServerState.mcp_server or None))
         else:
             result = self.agent.answer(question, history, selected,
                                        max_tokens=max_tokens,
@@ -1144,6 +1160,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     _ServerState.mcp_enabled = bool(data.get("enabled"))
                 if "model" in data:
                     _ServerState.mcp_model = str(data.get("model") or "")
+                if "server" in data:
+                    _ServerState.mcp_server = str(data.get("server") or "")
                 _save_mcp_settings()
             return self._send_json(200, _mcp_state_payload(check=False))
 

@@ -157,14 +157,41 @@ INVARIANT_DEFAULT_TEST_SET = [
 # Возможность использовать инструменты MCP-сервера (list_tools / call_tool).
 # В левой колонке интерфейса есть ЧЕКБОКС включения MCP, КНОПКА проверки
 # СТАТУСА MCP-сервера и ВЫБОР МОДЕЛИ, которая используется при работе с MCP.
-# Сервер поднимается по stdio как подпроцесс; по умолчанию это демо-сервер
-# проекта (test_server.py). Команду и аргументы можно переопределить.
+# Сервер поднимается по stdio как подпроцесс. По умолчанию используется
+# демо-сервер проекта (test_server.py); для работы с календарём укажите
+# MCP_SERVER_ARGS = ["yandex_calendar_server.py"]. Команду можно переопределить.
 MCP_ENABLED = False                 # включён ли MCP (стартовое значение)
 MCP_SERVER_CMD = ""                 # "" — текущий интерпретатор Python
-MCP_SERVER_ARGS = ["test_server.py"]  # аргументы запуска MCP-сервера
+MCP_SERVER_ARGS = ["test_server.py"]  # аргументы запуска MCP-сервера (по умолч.)
 MCP_TIMEOUT = 30                    # таймаут операций MCP (секунд)
+
+# Список доступных MCP-серверов для ВЫБОРА в интерфейсе. Каждый элемент:
+#   id    — короткий код (хранится в настройках);
+#   label — подпись в выпадающем списке;
+#   args  — аргументы запуска stdio-подпроцесса (команда — MCP_SERVER_CMD).
+# Активный сервер выбирается в UI и сохраняется в MCP_SETTINGS_FILE ("server").
+MCP_SERVERS = [
+    {"id": "demo", "label": "Демо (add / multiply / echo)",
+     "args": ["test_server.py"]},
+    {"id": "calendar", "label": "Яндекс.Календарь (CalDAV)",
+     "args": ["yandex_calendar_server.py"]},
+]
+# MCP-сервер по умолчанию (id из MCP_SERVERS).
+MCP_SERVER_DEFAULT = "demo"
 # Метка модели, применяемой агентом при работе с MCP. "" — первая доступная.
 MCP_MODEL = ""
 # Файл настроек MCP между запусками (в папке сессии).
 MCP_SETTINGS_FILE = os.path.join(SESSION_DIR, "mcp.json")
+
+# --- MCP-сервер Яндекс.Календаря (CalDAV) ---
+# Инструменты календаря: список/создание/изменение/удаление событий.
+# Доступ по CalDAV (https://caldav.yandex.ru/), учётные данные берутся из
+# файла YA_CRED_FILE: первая строка — логин (email), вторая — пароль
+# приложения с доступом к календарю (НЕ обычный пароль от аккаунта).
+# Чтобы использовать сервер календаря, укажите:
+#   MCP_SERVER_ARGS = ["yandex_calendar_server.py"]
+YANDEX_CALDAV_URL = "https://caldav.yandex.ru/"
+YA_CRED_FILE = os.path.join(BASE_DIR, "ya.txt")
+# Часовой пояс по умолчанию для событий без явного пояса (IANA).
+CALENDAR_TZ = "Europe/Moscow"
 

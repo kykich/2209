@@ -19,18 +19,58 @@ import sys
 
 from . import config
 
-__all__ = ["mcp_list_tools", "mcp_call_tool", "mcp_status"]
+__all__ = ["mcp_list_tools", "mcp_call_tool", "mcp_status",
+           "mcp_servers", "mcp_server_args"]
 
 
-def _server_params():
+def mcp_servers():
+    """Возвращает список доступных MCP-серверов для выбора в интерфейсе.
+
+    Каждый элемент: {id, label, args}. Источник — config.MCP_SERVERS.
+    """
+    servers = getattr(config, "MCP_SERVERS", None) or []
+    out = []
+    for s in servers:
+        if not isinstance(s, dict):
+            continue
+        out.append({
+            "id": s.get("id", ""),
+            "label": s.get("label", s.get("id", "")),
+            "args": list(s.get("args", []) or []),
+        })
+    # Если списка нет — отдаём единственный сервер по умолчанию.
+    if not out:
+        out.append({
+            "id": "default",
+            "label": "по умолчанию",
+            "args": list(getattr(config, "MCP_SERVER_ARGS", []) or
+                         ["test_server.py"]),
+        })
+    return out
+
+
+def mcp_server_args(server_id=None):
+    """Аргументы запуска MCP-сервера по его id.
+
+    server_id=None или неизвестный id -> аргументы по умолчанию
+    (config.MCP_SERVER_ARGS).
+    """
+    if server_id:
+        for s in mcp_servers():
+            if s["id"] == server_id:
+                return s["args"]
+    return list(getattr(config, "MCP_SERVER_ARGS", []) or ["test_server.py"])
+
+
+def _server_params(server_id=None):
     """Собирает параметры запуска MCP-сервера (stdio).
 
-    По умолчанию запускается СВОЙ тестовый сервер проекта (test_server.py)
-    текущим интерпретатором Python. Путь/команду можно переопределить через
-    config.MCP_SERVER_CMD / MCP_SERVER_ARGS.
+    Запускается выбранный сервер (server_id) текущим интерпретатором Python.
+    По умолчанию — сервер из config.MCP_SERVER_ARGS. Команду можно
+    переопределить через config.MCP_SERVER_CMD.
     """
     cmd = getattr(config, "MCP_SERVER_CMD", "") or sys.executable
-    args = list(getattr(config, "MCP_SERVER_ARGS", []) or ["test_server.py"])
+    args = mcp_server_args(server_id)
     env = dict(os.environ)
     # Гарантируем UTF-8 в обмене (кириллица в описаниях инструментов).
     env["PYTHONIOENCODING"] = "utf-8"
@@ -38,9 +78,11 @@ def _server_params():
     return cmd, args, env
 
 
-async def _with_session(action):
+async def _with_session(action, server_id=None):
     """Универсальный помощник: поднимает MCP-сессию и выполняет action(session).
 
+    server_id — id выбранного MCP-сервера (см. mcp_servers());
+    None — сервер по умолчанию (config.MCP_SERVER_ARGS).
     Возвращает то, что вернул action. Любые ошибки соединения всплывают
     наружу — вызывающий код превращает их в статус/сообщение об ошибке.
     """
@@ -49,7 +91,7 @@ async def _with_session(action):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    cmd, args, env = _server_params()
+    cmd, args, env = _server_params(server_id)
     params = StdioServerParameters(command=cmd, args=args, env=env)
 
     async with stdio_client(params) as (read, write):
@@ -75,9 +117,10 @@ def _run(coro_factory, timeout=None):
         raise TimeoutError("MCP: превышено время ожидания (%s c)" % timeout)
 
 
-def mcp_list_tools(timeout=None):
+def mcp_list_tools(timeout=None, server_id=None):
     """Возвращает список инструментов MCP-сервера.
 
+    server_id — id выбранного MCP-сервера (None — по умолчанию).
     Результат — dict:
         ok      — удалось ли подключиться и получить список;
         tools   — [{name, description, params}] (при ok=True);
@@ -98,16 +141,17 @@ def mcp_list_tools(timeout=None):
         return tools
 
     try:
-        tools = _run(lambda: _with_session(action), timeout=timeout)
+        tools = _run(lambda: _with_session(action, server_id), timeout=timeout)
         return {"ok": True, "tools": tools, "error": None}
     except Exception as exc:
         return {"ok": False, "tools": [], "error": str(exc)}
 
 
-def mcp_call_tool(name, arguments, timeout=None):
+def mcp_call_tool(name, arguments, timeout=None, server_id=None):
     """Вызывает инструмент MCP-сервера по имени.
 
     name — имя инструмента; arguments — dict с аргументами.
+    server_id — id выбранного MCP-сервера (None — по умолчанию).
     Результат — dict:
         ok        — вызов успешен (и инструмент не сообщил об ошибке);
         text      — текстовый результат (склеенный из контента);
@@ -130,16 +174,17 @@ def mcp_call_tool(name, arguments, timeout=None):
         return {"is_error": bool(is_err), "text": "\n".join(parts)}
 
     try:
-        res = _run(lambda: _with_session(action), timeout=timeout)
+        res = _run(lambda: _with_session(action, server_id), timeout=timeout)
         return {"ok": not res["is_error"], "text": res["text"],
                 "is_error": res["is_error"], "error": None}
     except Exception as exc:
         return {"ok": False, "text": "", "is_error": True, "error": str(exc)}
 
 
-def mcp_status(timeout=None):
+def mcp_status(timeout=None, server_id=None):
     """Проверяет СТАТУС MCP-сервера (для кнопки «Проверить статус»).
 
+    server_id — id выбранного MCP-сервера (None — по умолчанию).
     Пытается установить соединение и получить список инструментов.
     Результат — dict:
         ok         — сервер доступен и отвечает;
@@ -149,9 +194,9 @@ def mcp_status(timeout=None):
         server     — команда запуска сервера (для диагностики);
         error      — текст ошибки (при ok=False).
     """
-    cmd, args, _env = _server_params()
+    cmd, args, _env = _server_params(server_id)
     server_desc = " ".join([os.path.basename(cmd)] + list(args))
-    res = mcp_list_tools(timeout=timeout)
+    res = mcp_list_tools(timeout=timeout, server_id=server_id)
     if not res.get("ok"):
         return {
             "ok": False,

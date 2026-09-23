@@ -2112,14 +2112,37 @@
     // В левой колонке: чекбокс включения MCP, кнопка проверки СТАТУСА
     // сервера и селект МОДЕЛИ, применяемой при работе с MCP.
     // Состояние (вкл/выкл + модель) хранится на сервере (GET/POST /api/mcp).
-    var mcpEnabledEl = document.getElementById("mcp-enabled");
+        var mcpEnabledEl = document.getElementById("mcp-enabled");
+    var mcpServerSel = document.getElementById("mcp-server");
     var mcpModelSel = document.getElementById("mcp-model");
     var mcpCheckBtn = document.getElementById("mcp-check");
     var mcpStatusEl = document.getElementById("mcp-status");
     var mcpToolsEl = document.getElementById("mcp-tools");
 
     // Локальный снимок настроек MCP.
-    var mcpState = { enabled: false, model: "", status: null, available: false };
+    var mcpState = { enabled: false, server: "", servers: [],
+                     model: "", status: null, available: false };
+
+    // Заполняет селект доступных MCP-серверов (демо / календарь).
+    function fillMcpServerSelect(servers) {
+        if (!mcpServerSel) return;
+        if (Array.isArray(servers) && servers.length) mcpState.servers = servers;
+        var list = mcpState.servers || [];
+        var current = mcpState.server || (mcpServerSel.value || "");
+        mcpServerSel.innerHTML = "";
+        list.forEach(function (s) {
+            var o = document.createElement("option");
+            o.value = s.id;
+            o.textContent = s.label || s.id;
+            mcpServerSel.appendChild(o);
+        });
+        if (current && list.some(function (s) { return s.id === current; })) {
+            mcpServerSel.value = current;
+        } else if (list.length) {
+            mcpServerSel.value = list[0].id;
+        }
+        mcpState.server = mcpServerSel.value || "";
+    }
 
     // Заполняет селект моделей MCP (те же метки, что и доступные модели).
     function fillMcpModelSelect(labels) {
@@ -2172,12 +2195,19 @@
     }
 
     // Применяет состояние MCP, пришедшее от сервера.
-    function applyMcpState(d) {
+        function applyMcpState(d) {
         if (!d) return;
         mcpState.enabled = !!d.enabled;
         mcpState.available = !!d.available;
+        if (Array.isArray(d.servers) && d.servers.length) {
+            mcpState.servers = d.servers;
+        }
+        if (typeof d.server === "string") mcpState.server = d.server;
         if (typeof d.model === "string") mcpState.model = d.model;
         if (mcpEnabledEl) mcpEnabledEl.checked = mcpState.enabled;
+        if (mcpState.servers && mcpState.servers.length) {
+            fillMcpServerSelect(mcpState.servers);
+        }
         if (mcpModelSel && mcpModelSel.options.length) {
             mcpModelSel.value = mcpState.model || "";
         }
@@ -2216,6 +2246,17 @@
         mcpEnabledEl.addEventListener("change", function () {
             setStatus(mcpEnabledEl.checked ? "MCP включён." : "MCP выключен.", "ok");
             mcpAction("set", { enabled: mcpEnabledEl.checked });
+        });
+    }
+        if (mcpServerSel) {
+        mcpServerSel.addEventListener("change", function () {
+            mcpState.server = mcpServerSel.value || "";
+            // При смене сервера прошлый статус неактуален — сбрасываем.
+            renderMcpStatus(null);
+            setStatus("MCP-сервер: " + (mcpServerSel.options[mcpServerSel.selectedIndex] ?
+                mcpServerSel.options[mcpServerSel.selectedIndex].textContent :
+                mcpState.server), "ok");
+            mcpAction("set", { server: mcpState.server });
         });
     }
     if (mcpModelSel) {
