@@ -82,6 +82,19 @@ def _parse_dt(value, default_date=None):
     raise ValueError("не удалось разобрать дату/время: %r" % value)
 
 
+def _is_date_only(value):
+    """True, если строка задаёт только дату (без времени)."""
+    if value is None or value == "":
+        return False
+    s = str(value).strip().replace("T", " ")
+    return len(s) == 10   # формат YYYY-MM-DD — ровно 10 символов
+
+
+def _end_of_day(dt_value):
+    """Конец суток для переданной даты (23:59:59)."""
+    return dt_value.replace(hour=23, minute=59, second=59, microsecond=0)
+
+
 def _tzinfo():
     """Часовой пояс для отображения/создания событий (по умолчанию Europe/Moscow)."""
     name = os.environ.get("CALENDAR_TZ") or _default_tz_name()
@@ -178,23 +191,31 @@ def list_events(start: str, end: str) -> str:
     """Список событий календаря за период.
 
     start, end — границы периода в формате "YYYY-MM-DD" или "YYYY-MM-DD HH:MM".
-    Пример: start="2025-01-01", end="2025-01-31".
+    Год подставляйте ТЕКУЩИЙ (см. системное сообщение), например
+    start="<текущий год>-01-01", end="<текущий год>-01-31".
     """
     try:
         s = _parse_dt(start)
         e = _parse_dt(end)
         if s is None or e is None:
-            return "Укажите start и end (например, 2025-01-01 и 2025-01-31)."
+            return ("Укажите start и end в формате YYYY-MM-DD "
+                    "(год — текущий).")
+        # Если конец не позже начала (например, обе даты — один и тот же
+        # день: start=end=2026-09-30), расширяем конец до конца того же
+        # дня, иначе CalDAV вернёт пустой диапазон и события дня потеряются.
+        if e <= s:
+            e = _end_of_day(e if not _is_date_only(end) else s)
         with _client() as client:
             cal = _main_calendar(client)
             events = _events_in_range(cal, s, e)
     except Exception as exc:
         return "Ошибка доступа к календарю: %s" % exc
+    disp_end = e - _dt.timedelta(seconds=1) if e.time() == _dt.time(0, 0) else e
     if not events:
         return "Событий за период %s — %s нет." % (
-            s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d"))
+            s.strftime("%Y-%m-%d"), disp_end.strftime("%Y-%m-%d"))
     lines = ["События %s — %s:" % (
-        s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d"))]
+        s.strftime("%Y-%m-%d"), disp_end.strftime("%Y-%m-%d"))]
     for _ev, comp in events:
         lines.append(_fmt_event(comp))
     return "\n".join(lines)
