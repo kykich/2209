@@ -18,3 +18,7 @@ mcp
 
 
 caldav
+# `caldav` (+ его зависимость `icalendar`) нужны ТОЛЬКО для MCP-сервера
+# Яндекс.Календаря (yandex_calendar_server.py: list_events/create_event/…).
+# Без них инструменты календаря вернут: No module named 'caldav'.
+icalendar
